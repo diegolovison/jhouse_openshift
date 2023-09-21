@@ -1,8 +1,8 @@
 #!/bin/bash
 
-export MINIO_NS=minio
-export MINIO_IMG=quay.io/opendatahub/modelmesh-minio-examples:caikit-flan-t5
-export ACCESS_KEY_ID=THEACCESSKEY
+export MINIO_NS=foo-bar8
+export MINIO_IMG=quay.io/minio/minio:RELEASE.2023-06-19T19-52-50Z
+export ACCESS_KEY_ID=minio
 export SECRET_ACCESS_KEY=$(openssl rand -hex 32)
 export DOMAIN_NAME=$(oc get ingresses.config.openshift.io cluster -o jsonpath='{.spec.domain}' | awk -F'.' '{print $(NF-1)"."$NF}')
 export COMMON_NAME=$(oc get ingresses.config.openshift.io cluster -o jsonpath='{.spec.domain}'|sed 's/apps.//')
@@ -19,9 +19,9 @@ export DOMAIN_NAME=${MINIO_NS}.svc
 export COMMON_NAME=minio.${DOMAIN_NAME}
 
 # Clean Up
-sudo rm -rf ${DEMO_HOME}
-sudo rm -rf ${BASE_CERT_DIR}
-oc delete ns ${MINIO_NS} --force --wait
+rm -rf ${DEMO_HOME}
+rm -rf ${BASE_CERT_DIR}
+# oc delete ns ${MINIO_NS} --force --wait
 
 # Setup
 mkdir ${DEMO_HOME}
@@ -37,11 +37,21 @@ kind: Service
 metadata:
   name: minio
 spec:
+  ipFamilies:
+    - IPv4
   ports:
     - name: minio-client-port
       port: 9000
       protocol: TCP
       targetPort: 9000
+    - name: ui
+      protocol: TCP
+      port: 9090
+      targetPort: 9090
+  internalTrafficPolicy: Cluster
+  type: ClusterIP
+  ipFamilyPolicy: SingleStack
+  sessionAffinity: None
   selector:
     app: minio
 ---
@@ -54,8 +64,7 @@ metadata:
 spec:
   containers:
     - args:
-        - server
-        - /data1
+        - minio server /data --console-address :9090
       env:
         - name: MINIO_ROOT_USER
           value:  <accesskey>
@@ -67,6 +76,11 @@ spec:
       volumeMounts:
         - name: minio-tls
           mountPath: /home/modelmesh/.minio/certs
+      ports:
+        - containerPort: 9000
+          protocol: TCP
+        - containerPort: 9090
+          protocol: TCP
   volumes:
     - name: minio-tls
       projected:
@@ -116,7 +130,7 @@ openssl x509 -in ${BASE_CERT_DIR}/public.crt -text
 
 # Deploy Minio
 export CACERT=$(cat ${BASE_CERT_DIR}/public.crt | tr -d '\n' |sed 's/-----BEGIN CERTIFICATE-----/-----BEGIN CERTIFICATE-----\\\\n/g' |sed 's/-----E/\\\\n-----E/g')
-oc new-project ${MINIO_NS}
-oc create secret generic minio-tls --from-file=${BASE_CERT_DIR}/private.key --from-file=${BASE_CERT_DIR}/public.crt
+# oc new-project ${MINIO_NS}
+oc -n $MINIO_NS create secret generic minio-tls --from-file=${BASE_CERT_DIR}/private.key --from-file=${BASE_CERT_DIR}/public.crt
 sed "s/<accesskey>/$ACCESS_KEY_ID/g"  ${DEMO_HOME}/minio.yaml | sed "s+<secretkey>+$SECRET_ACCESS_KEY+g" | tee ${DEMO_HOME}/minio-current.yaml | oc -n ${MINIO_NS} apply -f -
 sed "s/<accesskey>/$ACCESS_KEY_ID/g" ${DEMO_HOME}/minio-secret.yaml | sed "s+<secretkey>+$SECRET_ACCESS_KEY+g" |sed "s/<minio_ns>/$MINIO_NS/g" |sed "s*<cacert>*$CACERT*g" | tee ${DEMO_HOME}/minio-secret-current.yaml | oc -n ${MINIO_NS} apply -f - 
